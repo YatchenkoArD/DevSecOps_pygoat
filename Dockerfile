@@ -1,4 +1,4 @@
-FROM python:3.11-slim-bookworm   # ← поменяли на актуальную и поддерживаемую базу
+FROM python:3.11-slim-bookworm  
 
 WORKDIR /app
 
