@@ -115,5 +115,34 @@ jobs:
           with:
             name: docker-scout-findings
             path: scout-report.sarif   
-      
+  sca_scan:
+    name: SCA - Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: []  # можно запускать параллельно, без зависимостей
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'  # или та, что у тебя в проекте
+
+      - name: Run pip-audit (official action)
+        uses: pypa/gh-action-pip-audit@v1.1.0  # актуальная версия на 2026
+        with:
+          inputs: requirements.txt          # путь к твоему файлу
+          # Опционально:
+          format: sarif                   # для интеграции с GitHub Security
+          output: pip-audit.sarif
+          fail-on: high                   # fail при high+ severity (по умолчанию не фейлит)
+          vulnerability-service: osv      # или pypi (default)
+
+      # Если хочешь артефакт (альтернатива SARIF)
+      - name: Upload SCA report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sca-pip-audit-report
+          path: pip-audit.sarif  # если указал format: sarif
           
