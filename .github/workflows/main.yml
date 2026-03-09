@@ -1,6 +1,6 @@
 name: CI
 
-on: [push]
+on: [push, pull_request]  # добавь pull_request для PR-ов
 
 jobs:
   test:
@@ -10,10 +10,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install system dependencies (for Pillow etc.)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libjpeg-dev zlib1g-dev libpng-dev libwebp-dev libopenjp2-7-dev libtiff-dev libfreetype6-dev liblcms2-dev
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.12'  # унифицируем на 3.12 (обнови requirements если нужно)
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
@@ -22,11 +28,10 @@ jobs:
           pip install pytest pytest-django pytest-cov
 
       - name: Run pytest
-        run: pytest
+        run: pytest --cov=. --cov-report=xml
         env:
-          DJANGO_SETTINGS_MODULE: pytest.ini
+          DJANGO_SETTINGS_MODULE: pygoat.settings  # ← исправлено!
 
-      # Опционально: upload coverage
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         if: always()
@@ -34,115 +39,86 @@ jobs:
           name: coverage-report
           path: coverage.xml
 
-  
   lint:
     name: Lint with Flake8
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5   
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'        
+          python-version: '3.12'
+          cache: 'pip'
+      - run: pip install flake8
+      - run: flake8 .
 
-      - name: Install Flake8
-        run: pip install flake8
-
-      - name: Run Flake8
-        run: flake8 .                     
-  
   sast_scan:
-    name: Run Bandit Scan
+    name: Run Bandit Scan (SAST)
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y libjpeg-dev zlib1g-dev ...
+
+      - uses: actions/setup-python@v5
         with:
-          python-version: 3.8
+          python-version: '3.12'
+          cache: 'pip'
 
-      - name: Set up Bandin
-        run: pip install bandit
+      - run: pip install -r requirements.txt bandit
 
-      - name: Run Bandit Scan
-        run: bandit -ll -ii -r . -f json -o report-bandit.json 
+      - run: bandit -ll -ii -r . -f json -o report-bandit.json
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: bandit-findings
           path: report-bandit.json
 
-  image_scan:
-      name: Build Docker Image and Scan It
-      runs-on: ubuntu-latest
-      
-      steps:
-        - name: Checkout code
-          uses: actions/checkout@v4         
-  
-        - name: Set Up Docker
-          uses: docker/setup-docker-action@v4
-          with:
-            version: latest
-  
-        - name: Build Docker Image
-          run: docker build -f Dockerfile -t pygoat:${{ github.sha }} .
-  
-        - name: Login to Docker Hub
-          uses: docker/login-action@v3
-          with:
-            username: ${{ secrets.REPO_USER }}
-            password: ${{ secrets.REPO_PWD }}
-  
-        - name: Docker Scout Scan
-          uses: docker/scout-action@v1        
-          with:
-            command: quickview,cves
-            only-severities: critical,high
-            sarif-file: scout-report.sarif
-            image: pygoat:${{ github.sha }}
-            
-        - name: Upload Artifact
-          uses: actions/upload-artifact@v4
-          if: always()
-          with:
-            name: docker-scout-findings
-            path: scout-report.sarif   
   sca_scan:
     name: SCA - Dependency Vulnerability Scan
     runs-on: ubuntu-latest
-    needs: []  # можно запускать параллельно, без зависимостей
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.8'  # или та, что у тебя в проекте
-
-      - name: Run pip-audit (official action)
-        uses: pypa/gh-action-pip-audit@v1.1.0  # актуальная версия на 2026
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Run pip-audit
+        uses: pypa/gh-action-pip-audit@v1.1.0
         with:
-          inputs: requirements.txt          # путь к твоему файлу
-          # Опционально:
-          format: sarif                   # для интеграции с GitHub Security
-          output: pip-audit.sarif
-          fail-on: high                   # fail при high+ severity (по умолчанию не фейлит)
-          vulnerability-service: osv      # или pypi (default)
+          inputs: requirements.txt
+          vulnerability-service: osv
+          # fail-on не существует → по умолчанию фейлит при vuln
+          # если хочешь НЕ фейлить: internal-be-careful-allow-failure: true
+          summary: true  # покажет summary в job
 
-      # Если хочешь артефакт (альтернатива SARIF)
-      - name: Upload SCA report
+  image_scan:
+    name: Build & Scan Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker
+        uses: docker/setup-docker-action@v5  # обновлено до v5
+
+      - name: Build Docker Image
+        run: docker build -f Dockerfile -t pygoat:${{ github.sha }} .
+
+      # Login только если пушить (можно убрать)
+      # - name: Login to Docker Hub ...
+
+      - name: Docker Scout Scan
+        uses: docker/scout-action@v1
+        with:
+          command: quickview,cves
+          only-severities: critical,high
+          sarif-file: scout-report.sarif
+          image: pygoat:${{ github.sha }}
+
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: sca-pip-audit-report
-          path: pip-audit.sarif  # если указал format: sarif
-          
+          name: docker-scout-findings
+          path: scout-report.sarif
